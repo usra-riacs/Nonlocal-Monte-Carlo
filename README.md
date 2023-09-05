@@ -1,2 +1,2 @@
-# NMC-solver
-Non-Equilibrium Monte Carlo Solver code, including Adaptive Parallel Tempering Solver
+# Nonlocal Monte-Carlo Methods
+Non-Equilibrium Monte Carlo Methods, including Adaptive Parallel Tempering Solver
