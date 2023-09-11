@@ -7,17 +7,17 @@ from cachetools import LRUCache
 from collections import defaultdict
 
 # Setting random seed for reproducibility
-np.random.seed(0)
+np.random.seed(123)
 
 
-class NMC:
+class NSA:
     """
-    The NMC class is used to implement the Non-equilibrium Monte Carlo (NMC) algorithm.
+    The NSA class is used to implement the Non-equilibrium Monte Carlo (NMC) + Simulated Annealing hybrid (NSA) algorithm.
     """
 
     def __init__(self, J, h):
         """
-        Initialize an NMC object.
+        Initialize an NSA object.
         :param J: A 2D numpy array representing the coupling matrix (weights J).
         :param h: A 1D numpy array or list representing the external field (biases h).
         """
@@ -343,9 +343,11 @@ class NMC:
 
         return clusters
 
-    def NMC_subroutine(self, m_star, num_cycles, num_sweeps_per_NMC_phase, full_update_frequency, M_skip, global_beta,
-                       temp_x, lambda_start, lambda_end, lambda_reduction_factor, threshold_initial, threshold_cutoff,
-                       max_iterations, tolerance, all_clusters=None, hash_table=None, use_hash_table=False):
+    def NMC_subroutine_annealed(self, m_star, num_cycles, num_sweeps_per_NMC_phase, full_update_frequency, M_skip,
+                                global_beta,
+                                temp_x, lambda_start, lambda_end, lambda_reduction_factor, threshold_initial,
+                                threshold_cutoff,
+                                max_iterations, tolerance, all_clusters=None, hash_table=None, use_hash_table=False):
         """
         Implements a Non-equilibrium Monte Carlo method for energy minimization.
 
@@ -389,7 +391,7 @@ class NMC:
         M_index = 0  # Index to keep track of position in M_overall and energy_overall
 
         for cycle in range(num_cycles):
-            print(f'\nCurrent iteration = {cycle + 1}')
+            print(f'\nCurrent NMC iteration = {cycle + 1}')
             # Get clusters if not provided, using LBP_convexified
             if not clusters_provided:
                 clusters, _, _, _, _ = self.LBP_convexified(
@@ -402,14 +404,16 @@ class NMC:
             # Modify J and h for clusters
             J_c = self.J.copy()
             h_c = self.h.copy()
-            J_c[all_clusters, :] = J_c[all_clusters, :] / temp_x
-            h_c[all_clusters] /= temp_x
+            # Note: the following two lines are not needed anymore since we are annealing in backbones heating starting at global_beta/temp_x
+            # J_c[all_clusters, :] = J_c[all_clusters, :] / temp_x
+            # h_c[all_clusters] /= temp_x
             h_c[non_clusters] = m_init[
-                                    non_clusters] * 10000  # Strongly bias the non-cluster spins to keep them frozen
+                                    non_clusters] * 10000 * temp_x  # Strongly bias the non-cluster spins to keep
             # caution: hash_table is not used as J and h are being scaled by temp_x.
             M = self.MCMC_GC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, J_c, h_c, self.colorMap,
-                             anneal=False, hash_table=hash_table,
-                             use_hash_table=False)  # Run MCMC for clusters
+                             anneal=True, sweeps_per_beta=round(num_sweeps_per_NMC_phase / 20),
+                             initial_beta=global_beta / temp_x, hash_table=hash_table,
+                             use_hash_table=False)  # anneal for clusters starting at temp_x higher than global_beta
             energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in
                         range(M.shape[1])]  # Compute energies
 
@@ -429,8 +433,10 @@ class NMC:
 
             # caution: hash_table is not used as h_nc is not same as h
             M = self.MCMC_GC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, J_nc, h_nc, self.colorMap,
-                             anneal=False, hash_table=hash_table,
-                             use_hash_table=False)  # Run MCMC for non-clusters
+                             anneal=True, sweeps_per_beta=round(num_sweeps_per_NMC_phase / 20),
+                             initial_beta=global_beta * 0.8, hash_table=hash_table,
+                             use_hash_table=False)  # anneal for non-clusters starting at 80% higher than global_beta
+
             energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in
                         range(M.shape[1])]  # Compute energies
 
@@ -445,7 +451,9 @@ class NMC:
             # Full update after every full_update_frequency cycles
             if cycle % full_update_frequency == 0:
                 M = self.MCMC_GC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, self.J, self.h, self.colorMap,
-                                 anneal=False, hash_table=hash_table, use_hash_table=use_hash_table)
+                                 anneal=True, sweeps_per_beta=round(num_sweeps_per_NMC_phase / 20),
+                                 initial_beta=global_beta * 0.8, hash_table=hash_table,
+                                 use_hash_table=use_hash_table)  # anneal for all spins starting at 80% higher than global_beta
                 energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in range(M.shape[1])]
 
                 # Store results
@@ -458,7 +466,7 @@ class NMC:
                 m_init = M[:, min_energy_idx]
 
                 m_star = m_init.copy()
-                print(f'\ncurrent m_star energy = {Energy_star:.8f}')
+                # print(f'\ncurrent m_star energy = {Energy_star:.8f}')
 
         M_overall = M_overall[:, :M_index]
         energy_overall = energy_overall[:M_index]
@@ -466,33 +474,36 @@ class NMC:
 
         return M_overall, energy_overall, min_energy, all_clusters
 
-    def run(self, num_sweeps_initial=int(1e4), num_sweeps_per_NMC_phase=int(1e4),
-            num_NMC_cycles=10, full_update_frequency=1, M_skip=1, temp_x=20,
-            global_beta=3, lambda_start=0.5, lambda_end=0.01, lambda_reduction_factor=0.9,
-            threshold_initial=0.999999, threshold_cutoff=1, max_iterations=100, tolerance=np.finfo(float).eps,
-            use_hash_table=False):
+    def run(self, num_cycles=2, full_update_frequency=1, M_skip=1,
+            lambda_start=0.5, lambda_end=0.01, lambda_reduction_factor=0.9, temp_x=30,
+            threshold_initial=0.999999, threshold_cutoff=1, tolerance=np.finfo(float).eps, max_iterations=1000,
+            global_beta=3, pure_SA_portion=1 / 3, SA_portion_in_NMC=0.25, num_SA_betas=45, num_NMC_betas=5,
+            total_num_sweeps=int(3e4), use_hash_table=False):
         """
-        Execute the NMC  algorithm to solve for optimal states and energy.
+        Execute the NSA algorithm to solve for optimal states and energy.
 
         Parameters:
-        - num_sweeps_initial (int): Number of sweeps for initial MCMC run to find good m_star.
-        - num_sweeps_per_NMC_phase (int): Number of MCMC sweeps per NMC phase.
-        - num_NMC_cycles (int): Total number of NMC cycles.
-        - full_update_frequency (int): Frequency of all spin updates in NMC.
-        - M_skip (int): Interval for storing results.
-        - temp_x (int): Heated temperature factor for NMC (scales beta by dividing by temp_x)
-        - global_beta (float): Global inverse temperature for MCMC and NMC.
+        - num_cycles (int, default=2): Total number of NMC cycles at each NMC beta.
+        - full_update_frequency (int, default=1): Frequency at which all spins are updated in NMC.
+        - M_skip (int, default=1): Interval between results storage.
+        - temp_x (int, default=30): Heated temperature factor for NSA (scales beta by dividing by temp_x).
+        - global_beta (float, default=3): Global inverse temperature for SA and NMC.
         - lambda_start (float): Initial lambda value for convexified LBP.
         - lambda_end (float): Ending lambda value for for convexified LBP.
         - lambda_reduction_factor (float): Factor by which lambda is reduced at each LBP run.
         - threshold_initial (float): Initial threshold of marginals for growing backbones seeds
         - threshold_cutoff (float): Ending threshold of marginals for backbones.
-        - max_iterations (int): Maximum iterations for LBP to converge
-        - tolerance (float): Tolerance for convergence in LBP.
+        - max_iterations (int, default=1000): Maximum iterations for LBP to converge.
+        - tolerance (float, default=np.finfo(float).eps): Tolerance for convergence in LBP.
+        - pure_SA_portion (float, default=1/3): Proportion of the run that's pure simulated annealing.
+        - SA_portion_in_NMC (float, default=0.25): Proportion of initial SA in each NMC cycle.
+        - num_SA_betas (int, default=45): Number of betas in the SA portion.
+        - num_NMC_betas (int, default=5): Number of betas in the NMC portion.
+        - total_num_sweeps (int, default=3e4): Total number of sweeps performed (SA+NMC).
         - use_hash_table (bool, optional): If True, the hash table will be used for caching results.
 
         Returns:
-        - Tuple: M_overall, energy_overall, min_energy
+        - Tuple: M_overall, energy_overall
         """
 
         # Boolean flag to decide normalization
@@ -502,7 +513,30 @@ class NMC:
         self.J = self.J / norm_factor
         self.h = self.h / norm_factor
 
+        # Setup hyperparameters for the simulated annealing and NMC process
+        NMC_portion_in_NMC = 1 - SA_portion_in_NMC
+        total_num_sweeps_SA = int(pure_SA_portion * total_num_sweeps)
+        total_num_sweeps_NMC = total_num_sweeps - total_num_sweeps_SA
+
+        sweeps_per_beta_SA = round(total_num_sweeps_SA / num_SA_betas)
+        sweeps_per_beta_SA_b4_NMC = round(SA_portion_in_NMC * total_num_sweeps_NMC / num_NMC_betas)
+        sweeps_per_beta_NMC = round(NMC_portion_in_NMC * total_num_sweeps_NMC / num_NMC_betas)
+        sweeps_per_beta_NMC_per_phase = round(sweeps_per_beta_NMC / 3 / num_cycles)
+
+        num_betas = num_SA_betas + num_NMC_betas
+        beta_vals = np.linspace(1 / total_num_sweeps, global_beta, num_betas)
+
+        # Initialize random initial state for spins
+        m_init = np.sign(2 * np.random.rand(len(self.J)) - 1)
+
+        # Arrays to store magnetization and energy values
         N = len(self.h)
+        M_overall = np.zeros((N, num_SA_betas * sweeps_per_beta_SA + num_NMC_betas * (
+                sweeps_per_beta_SA_b4_NMC + 3 * num_cycles * sweeps_per_beta_NMC_per_phase)))
+        energy_overall = np.zeros(num_SA_betas * sweeps_per_beta_SA + num_NMC_betas * (
+                sweeps_per_beta_SA_b4_NMC + 3 * num_cycles * sweeps_per_beta_NMC_per_phase))
+
+        sweep_index = 0
 
         # If use_hash_table is True, create a new hash table for this process
         if use_hash_table:
@@ -510,158 +544,114 @@ class NMC:
         else:
             hash_table = None
 
-        # initial MCMC to find m_star
-        m_init = np.sign(2 * np.random.rand(N) - 1)
+        # Main loop iterating over beta values
+        for beta_idx in range(num_betas):
+            print(f'\nProgress: Beta {beta_idx + 1}/{num_betas}. Current beta = {beta_vals[beta_idx]:.8f}')
 
-        # Running MCMC to find the initial m_star
-        M = self.MCMC_GC(num_sweeps_initial, m_init.copy(), global_beta, self.J, self.h, self.colorMap, anneal=True,
-                         sweeps_per_beta=1, initial_beta=0,
-                         hash_table=hash_table,
-                         use_hash_table=use_hash_table)
+            beta = beta_vals[beta_idx]
 
-        # Calculate initial energies from MCMC
-        initial_energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in range(M.shape[1])]
+            # If still in the SA-only phase
+            if beta_idx < num_SA_betas:
+                # Perform pure SA and save results
+                M_SA = self.MCMC_GC(sweeps_per_beta_SA, m_init, beta, self.J, self.h, self.colorMap, anneal=False,
+                                    hash_table=hash_table,
+                                    use_hash_table=use_hash_table)
+                current_sweep_count = M_SA.shape[1]
+                M_overall[:, sweep_index: sweep_index + current_sweep_count] = M_SA
+                energy_SA = np.array([-np.dot(m.T, self.J).dot(m) / 2 - np.dot(m.T, self.h) for m in M_SA.T])
+                energy_overall[sweep_index: sweep_index + current_sweep_count] = energy_SA
+                sweep_index += current_sweep_count
+                m_init = M_SA[:, -1]
+                print(f'\nm_star energy after full SA = {energy_SA[-1]:.8f}')
 
-        Energy_star = min(initial_energies)
-        min_energy_idx = np.argmin(initial_energies)
+            else:
+                # Perform partial SA before NMC and then NMC and save results
+                M_SA = self.MCMC_GC(sweeps_per_beta_SA_b4_NMC, m_init, beta, self.J, self.h, self.colorMap,
+                                    anneal=False,
+                                    hash_table=hash_table,
+                                    use_hash_table=use_hash_table)
+                current_sweep_count = M_SA.shape[1]
+                M_overall[:, sweep_index: sweep_index + current_sweep_count] = M_SA
+                energy_SA = np.array([-np.dot(m.T, self.J).dot(m) / 2 - np.dot(m.T, self.h) for m in M_SA.T])
+                energy_overall[sweep_index: sweep_index + current_sweep_count] = energy_SA
+                sweep_index += current_sweep_count
+                m_init = M_SA[:, np.argmin(energy_SA)]
+                print(f'\nm_star energy after partial SA before NMC = {min(energy_SA):.8f}')
 
-        m_init = M[:, min_energy_idx]
-        m_star = m_init.copy()
-        print(f'\ninitial m_star energy = {Energy_star:.8f}')
+                # annealing the hyperparameters for backbones (to find larger to smaller backbones as we cool down in SA)
+                if beta_idx != num_SA_betas:
+                    temp_x *= 0.9
+                    threshold_cutoff += (1 - threshold_cutoff) * 0.8
 
-        M_overall, energy_overall, min_energy, all_clusters = self.NMC_subroutine(m_star, num_NMC_cycles,
-                                                                                  num_sweeps_per_NMC_phase,
-                                                                                  full_update_frequency, M_skip,
-                                                                                  global_beta, temp_x,
-                                                                                  lambda_start, lambda_end,
-                                                                                  lambda_reduction_factor,
-                                                                                  threshold_initial, threshold_cutoff,
-                                                                                  max_iterations,
-                                                                                  tolerance, hash_table=hash_table,
-                                                                                  use_hash_table=use_hash_table)
+                M_NMC, _, _, _ = self.NMC_subroutine_annealed(m_init, num_cycles,
+                                                              sweeps_per_beta_NMC_per_phase, full_update_frequency,
+                                                              M_skip, beta, temp_x, lambda_start, lambda_end,
+                                                              lambda_reduction_factor, threshold_initial,
+                                                              threshold_cutoff, max_iterations, tolerance,
+                                                              hash_table=hash_table, use_hash_table=use_hash_table)
+                current_sweep_count = M_NMC.shape[1]
+                M_overall[:, sweep_index: sweep_index + current_sweep_count] = M_NMC
+                energy_NMC = np.array([-np.dot(m.T, self.J).dot(m) / 2 - np.dot(m.T, self.h) for m in M_NMC.T])
+                energy_overall[sweep_index: sweep_index + current_sweep_count] = energy_NMC
+                sweep_index += current_sweep_count
+                m_init = M_NMC[:, np.argmin(energy_NMC)]
+                print(f'\nm_star energy after NMC = {min(energy_NMC):.8f}')
 
-        # Call to the plot method
-        self.plot_results(M_overall, energy_overall, all_clusters, M_skip,
-                          num_NMC_cycles, full_update_frequency, num_sweeps_per_NMC_phase)
+        self.plot_results(energy_overall, beta_vals, sweeps_per_beta_SA, num_SA_betas, sweeps_per_beta_SA_b4_NMC,
+                          sweeps_per_beta_NMC_per_phase, num_NMC_betas, num_cycles, total_num_sweeps)
 
-        return M_overall, energy_overall, min_energy
+        return M_overall, energy_overall
 
-    def plot_results(self, M_overall, energy_overall, all_clusters, M_skip, num_NMC_cycles, full_update_frequency,
-                     num_sweeps_per_NMC_phase):
+    def plot_results(self, energy_overall, beta_vals, sweeps_per_beta_SA, num_SA_betas, sweeps_per_beta_SA_b4_NMC,
+                     sweeps_per_beta_NMC_per_phase, num_NMC_betas, num_cycles, total_num_sweeps):
         """
-        Plot the spin configurations and energy evolution.
+        Plot the results of the NSA algorithm.
 
         Parameters:
-        - M_overall (numpy.ndarray): The overall magnetization/spin data.
-        - energy_overall (numpy.ndarray): Energy data for each sweep.
-        - all_clusters (numpy.ndarray): Indices of all clusters.
-        - M_skip (int): Number of sweeps to skip for the magnetization plot.
-        - num_NMC_cycles (int): Total number of NMC cycles.
-        - full_update_frequency (int): Frequency of full updates in the NMC cycles.
-        - num_sweeps_per_NMC_phase (int): Number of sweeps per NMC phase.
+        - energy_overall (array): Energy data for each sweep.
+        - beta_vals (array): NSA annealing schedule.
+        - sweeps_per_beta_SA (int): Number of sweeps for each beta during Simulated Annealing phase.
+        - num_SA_betas (int): Number of betas for the Simulated Annealing phase.
+        - sweeps_per_beta_SA_b4_NMC (int): Number of sweeps for each beta ahead of each NMC phase.
+        - sweeps_per_beta_NMC_per_phase (int): Number of sweeps for each NMC phase at each beta.
+        - num_NMC_betas (int): Number of betas for the NMC phase.
+        - num_cycles (int): Number of NMC cycles at each beta.
+        - total_num_sweeps (int): Total number of sweeps (SA+NMC).
 
         Returns:
         None. This method shows plots as output.
         """
 
-        N = len(self.h)  # Get the size of the spin system
-
-        # Creating the first figure to visualize the cluster spins
-        fig, axes = plt.subplots(2, 1, figsize=(10, 10))
-
-        # Plotting cluster spins
-        axes[0].imshow(M_overall[all_clusters, ::M_skip], aspect='auto', cmap='viridis')
-        axes[0].set_xlabel('number of sweeps', fontsize=14, fontweight='bold')
-        axes[0].set_ylabel('cluster index', fontsize=14, fontweight='bold')
-        axes[0].tick_params(axis='both', which='major', labelsize=14)
-
-        # Counter for plotting vertical lines and labels at appropriate positions
-        counter = 1
-
-        # Vertical lines and labels for the NMC cycles
-        for i in range(num_NMC_cycles):
-            axes[0].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            axes[0].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'C', fontsize=14,
-                         ha='center', color='red', fontweight='bold')
-            counter += 1
-
-            axes[0].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            axes[0].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'NC', fontsize=14,
-                         ha='center', color=(0, 0.5, 0), fontweight='bold')
-            counter += 1
-
-            if i % full_update_frequency == 0:
-                axes[0].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-                axes[0].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'ALL', fontsize=14,
-                             ha='center', color='blue', fontweight='bold')
-                counter += 1
-
-        non_cluster_indices = np.setdiff1d(np.arange(N), all_clusters)
-
-        # Plotting non-cluster spins
-        axes[1].imshow(M_overall[non_cluster_indices, ::M_skip], aspect='auto', cmap='viridis')
-        axes[1].set_xlabel('number of sweeps', fontsize=14, fontweight='bold')
-        axes[1].set_ylabel('non-cluster index', fontsize=14, fontweight='bold')
-        axes[1].tick_params(axis='both', which='major', labelsize=14)
-
-        # Resetting the counter for the non-cluster plot
-        counter = 1
-
-        # Vertical lines and labels for the NMC cycles (similar to above)
-        for i in range(num_NMC_cycles):
-            axes[1].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            axes[1].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'C', fontsize=14,
-                         ha='center', color='red', fontweight='bold')
-            counter += 1
-
-            axes[1].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            axes[1].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'NC', fontsize=14,
-                         ha='center', color=(0, 0.5, 0), fontweight='bold')
-            counter += 1
-
-            if i % full_update_frequency == 0:
-                axes[1].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-                axes[1].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'ALL', fontsize=14,
-                             ha='center', color='blue', fontweight='bold')
-                counter += 1
-
-        plt.tight_layout()
-        plt.show()
-
-        # Creating a separate figure for the energy evolution
-        ymax = np.percentile(energy_overall, 100)  # Adjust the percentile as needed
+        # Calculate the upper y limit
+        ymax = np.percentile(energy_overall, 95)  # Adjust the percentile as per your needs
         ymin = np.min(energy_overall)
-        fig, ax = plt.subplots(figsize=(10, 5))
 
-        # Plotting the energy values
-        ax.plot(np.arange(0, len(energy_overall) * M_skip, M_skip), energy_overall)
-        ax.set_xlabel('number of sweeps', fontsize=14, fontweight='bold')
-        ax.set_ylabel('energy', fontsize=14, fontweight='bold')
-        ax.tick_params(axis='both', which='major', labelsize=14)
-        ax.set_ylim([ymin, ymax])
+        # Prepare x-axis labels
+        beta_axis = np.zeros(len(energy_overall))
+        sweeps_cumulative = np.cumsum(
+            [val for sublist in
+             [sweeps_per_beta_SA * np.ones(num_SA_betas),
+              (sweeps_per_beta_SA_b4_NMC + 3 * num_cycles * sweeps_per_beta_NMC_per_phase) * np.ones(num_NMC_betas)]
+             for val in sublist]
+        )
 
-        # Resetting the counter for the energy plot
-        counter = 1
-        label_position = ymin + 0.05 * (ymax - ymin)  # Position labels 5% above the minimum
+        for i in range(len(beta_vals)):
+            if i == 0:
+                beta_axis[0:int(sweeps_cumulative[i])] = beta_vals[i]
+            else:
+                beta_axis[int(sweeps_cumulative[i - 1]):int(sweeps_cumulative[i])] = beta_vals[i]
 
-        # Vertical lines and labels for the NMC cycles (similar to above)
-        for i in range(num_NMC_cycles):
-            ax.axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            ax.text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, label_position, 'C', fontsize=14,
-                    ha='center', color='red', fontweight='bold')
-            counter += 1
+        tickskip = int(total_num_sweeps / 10)
 
-            ax.axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            ax.text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, label_position, 'NC',
-                    fontsize=14, ha='center', color=(0, 0.5, 0), fontweight='bold')
-            counter += 1
-
-            if i % full_update_frequency == 0:
-                ax.axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-                ax.text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, label_position, 'ALL',
-                        fontsize=14, ha='center', color='blue', fontweight='bold')
-                counter += 1
-
+        # Plotting Energy
+        plt.figure()
+        plt.plot(energy_overall)
+        plt.xlabel('Beta', fontsize=14, fontweight='bold')
+        plt.ylabel('Energy', fontsize=14, fontweight='bold')
+        plt.xticks(ticks=np.arange(0, len(energy_overall), tickskip), labels=np.round(beta_axis[::tickskip], 2))
+        plt.ylim([ymin, ymax])  # set the y limit
+        plt.xlim([0, len(energy_overall)])  # set the x limit
+        plt.grid(True)
         plt.tight_layout()
         plt.show()
 
@@ -676,35 +666,48 @@ def main():
     h = loadmat('h.mat')['h']
     h = np.asarray(h).copy().reshape(-1)  # Reshape h into a 1D array
 
-    # Create an instance of NMC class
-    nmc_instance = NMC(J, h)
-
-    # Set hyperparameters (adjust to your specific needs)
-    num_sweeps_initial = int(1e4)
-    num_sweeps_per_NMC_phase = int(1e4)
-    num_NMC_cycles = 10
+    # Define parameters as variables for easy access
+    num_cycles = 2
     full_update_frequency = 1
     M_skip = 1
-    temp_x = 20
-    global_beta = 3
     lambda_start = 0.5
     lambda_end = 0.01
     lambda_reduction_factor = 0.9
+    temp_x = 30
     threshold_initial = 0.999999
     threshold_cutoff = 1
-    max_iterations = 100
     tolerance = np.finfo(float).eps
+    max_iterations = 1000
+    global_beta = 3
+    pure_SA_portion = 1 / 3
+    SA_portion_in_NMC = 0.25
+    num_SA_betas = 45
+    num_NMC_betas = 5
+    total_num_sweeps = int(3e4)
     use_hash_table = True  # Flag to decide whether to use hash table
 
-    # Execute the run method
-    M_overall, energy_overall, min_energy = nmc_instance.run(num_sweeps_initial, num_sweeps_per_NMC_phase,
-                                                             num_NMC_cycles, full_update_frequency, M_skip, temp_x,
-                                                             global_beta, lambda_start, lambda_end,
-                                                             lambda_reduction_factor, threshold_initial,
-                                                             threshold_cutoff,
-                                                             max_iterations, tolerance, use_hash_table=use_hash_table)
+    # Create an instance of the NSA class
+    nsa_instance = NSA(J, h)
 
-    print(f"Minimum Energy: {min_energy:.8f}")
+    # Call the run method with parameters
+    nsa_instance.run(num_cycles=num_cycles,
+                     full_update_frequency=full_update_frequency,
+                     M_skip=M_skip,
+                     lambda_start=lambda_start,
+                     lambda_end=lambda_end,
+                     lambda_reduction_factor=lambda_reduction_factor,
+                     temp_x=temp_x,
+                     threshold_initial=threshold_initial,
+                     threshold_cutoff=threshold_cutoff,
+                     tolerance=tolerance,
+                     max_iterations=max_iterations,
+                     global_beta=global_beta,
+                     pure_SA_portion=pure_SA_portion,
+                     SA_portion_in_NMC=SA_portion_in_NMC,
+                     num_SA_betas=num_SA_betas,
+                     num_NMC_betas=num_NMC_betas,
+                     total_num_sweeps=total_num_sweeps,
+                     use_hash_table=use_hash_table)
 
 
 if __name__ == "__main__":

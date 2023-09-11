@@ -1,36 +1,62 @@
+import random
+import time
+from concurrent.futures import ProcessPoolExecutor
 import networkx as nx
 import numpy as np
-from scipy.io import loadmat
-import matplotlib.pyplot as plt
+from matplotlib import pyplot as plt
 from scipy.sparse import csr_matrix
 from cachetools import LRUCache
+from random import randint
 from collections import defaultdict
 
-# Setting random seed for reproducibility
-np.random.seed(0)
 
+# np.random.seed(12624755)  # Set the seed to an arbitrary number
 
-class NMC:
+class NPT:
     """
-    The NMC class is used to implement the Non-equilibrium Monte Carlo (NMC) algorithm.
+    The Non-equilibrium Monte Carlo (NMC) + AdaptiveParallelTempering (APT) = NPT class is used to implement the NPT algorithm.
     """
 
     def __init__(self, J, h):
         """
-        Initialize an NMC object.
+        Initialize an NPT object.
         :param J: A 2D numpy array representing the coupling matrix (weights J).
         :param h: A 1D numpy array or list representing the external field (biases h).
         """
         self.J = J
+
+        # Convert h to a numpy array if it's a list
+        if isinstance(h, list):
+            h = np.array(h)
+
+        # If h is a 1D array, reshape it to be a 2D column vector
+        if len(h.shape) == 1:
+            h = h[:, np.newaxis]
         self.h = h
 
         self.colorMap = self.greedy_coloring_saturation_largest_first()
+
+    def replica_energy(self, M, num_sweeps):
+        """
+        Calculate the energy of a given replica over a number of sweeps.
+
+        :param M: A 2D numpy array representing the MCMC state after each sweep.
+        :param num_sweeps: An integer representing the number of sweeps.
+
+        :return: A tuple where the first element is the minimum energy and the second element is an array of energies.
+        """
+        EE1 = np.zeros(num_sweeps)
+        for ii in range(num_sweeps):
+            m1 = M[:, ii]
+            EE1[ii] = -1 * (m1.T @ self.J @ m1 / 2 + m1.T @ self.h)
+        minEnergy = np.min(EE1)
+        return minEnergy, EE1
 
     def greedy_coloring_saturation_largest_first(self):
         """
         Perform greedy coloring using the saturation largest first strategy.
 
-        :return colorMap: A 1D numpy array containing the colorMap of the graph.
+        :return colorMap: A 1D numpy array containing the colormap of the graph.
         """
         # Create a NetworkX graph from the J matrix
         G = nx.Graph(self.J)
@@ -116,6 +142,27 @@ class NMC:
                 M[:, jj] = m.ravel()
 
         return M
+
+
+    def MCMC_task(self, replica_i, num_sweeps_MCMC, m_start, beta_list, use_hash_table=False):
+        """
+        Perform a Monte Carlo simulation for a single task.
+
+        This method is designed to be run in a separate process.
+
+        :param m_start: A 1D numpy array representing the initial state.
+        :param beta_list: A 1D numpy array representing the inverse temperatures for the replicas.
+        :param num_sweeps_MCMC: An integer representing the number of MCMC sweeps.
+        :param use_hash_table: A boolean flag. If True, a hash table will be used for caching results. (default = 0)
+        """
+
+        # If use_hash_table is True, create a new hash table for this process
+        if use_hash_table:
+            hash_table = LRUCache(maxsize=10000)
+        else:
+            hash_table = None
+        return self.MCMC_GC(num_sweeps_MCMC, m_start.copy(), beta_list[replica_i - 1], self.J, self.h, self.colorMap, hash_table=hash_table, use_hash_table=use_hash_table)
+
 
     def LBP_convexified(self, lambda_start, lambda_end, lambda_reduction_factor, m_star, epsilon, tolerance,
                         max_iterations, threshold_initial, threshold_cutoff, global_beta):
@@ -466,223 +513,233 @@ class NMC:
 
         return M_overall, energy_overall, min_energy, all_clusters
 
-    def run(self, num_sweeps_initial=int(1e4), num_sweeps_per_NMC_phase=int(1e4),
-            num_NMC_cycles=10, full_update_frequency=1, M_skip=1, temp_x=20,
+    def NMC_task(self, m_start, num_cycles, num_sweeps_per_NMC_phase, full_update_frequency, M_skip, global_beta,
+                 temp_x, lambda_start, lambda_end, lambda_reduction_factor, threshold_initial, threshold_cutoff,
+                 max_iterations, tolerance, use_hash_table=False):
+        """
+        This is a wrapper function to call NMC_subroutine for parallel processing.
+        """
+        M_overall, energy_overall, min_energy, all_clusters = self.NMC_subroutine(
+            m_start, num_cycles, num_sweeps_per_NMC_phase, full_update_frequency, M_skip, global_beta,
+            temp_x, lambda_start, lambda_end, lambda_reduction_factor, threshold_initial, threshold_cutoff,
+            max_iterations, tolerance, use_hash_table=use_hash_table
+        )
+
+        # Return the result, or modify as needed.
+        return M_overall
+
+
+
+    def select_non_overlapping_pairs(self, all_pairs):
+        """
+        Select non-overlapping pairs from a list of all possible consecutive pairs.
+
+        :param all_pairs: A list of tuples where each tuple is a consecutive pair.
+
+        :return: A list of non-overlapping pairs (a total of num_swapping_pairs).
+        """
+        available_pairs = all_pairs.copy()
+        selected_pairs = []
+        for _ in range(self.num_swapping_pairs):
+            if not available_pairs:
+                raise ValueError("Cannot find non-overlapping pairs.")
+            i_pair = randint(0, len(available_pairs) - 1)
+            pair = available_pairs[i_pair]
+            selected_pairs.append(pair)
+            # Remove pairs that overlap with the chosen pair
+            available_pairs = [p for p in available_pairs if
+                               p[0] != pair[0] and p[0] != pair[1] and p[1] != pair[0] and p[1] != pair[1]]
+        return selected_pairs
+
+    def run(self, beta_list, num_replicas, doNMC, num_sweeps_MCMC=1000, num_sweeps_read=1000, num_swap_attempts=100,
+            num_swapping_pairs=1, num_sweeps_per_NMC_phase=int(1e4), num_cycles=10, full_update_frequency=1, M_skip=1, temp_x=20,
             global_beta=3, lambda_start=0.5, lambda_end=0.01, lambda_reduction_factor=0.9,
             threshold_initial=0.999999, threshold_cutoff=1, max_iterations=100, tolerance=np.finfo(float).eps,
-            use_hash_table=False):
+            use_hash_table=False, num_cores=8):
         """
-        Execute the NMC  algorithm to solve for optimal states and energy.
+        Run the NPT algorithm.
+        :param beta_list: A 1D numpy array representing the inverse temperatures for the replicas.
+        :param num_replicas: An integer, the number of replicas (parallel chains) to use in the algorithm.
+        :param doNMC (list of bool): List of booleans indicating if a specific replica should use the NMC task.
+                            True to use NMC, False to use MCMC.
+                            The length of doNMC should match num_replicas.
+        :param num_sweeps_MCMC: An integer, the number of Monte Carlo sweeps to perform (default =1000) before a swap.
+        :param num_sweeps_read: An integer, the number of last sweeps to read from the chains (default =1000) before a swap.
+        :param num_swap_attempts: An integer, the number of swap attempts between chains (default = 100).
+        :param num_swapping_pairs: An integer, the number of non-overlapping replica pairs per swap attempt (default =1).
 
-        Parameters:
-        - num_sweeps_initial (int): Number of sweeps for initial MCMC run to find good m_star.
-        - num_sweeps_per_NMC_phase (int): Number of MCMC sweeps per NMC phase.
-        - num_NMC_cycles (int): Total number of NMC cycles.
-        - full_update_frequency (int): Frequency of all spin updates in NMC.
-        - M_skip (int): Interval for storing results.
-        - temp_x (int): Heated temperature factor for NMC (scales beta by dividing by temp_x)
-        - global_beta (float): Global inverse temperature for MCMC and NMC.
-        - lambda_start (float): Initial lambda value for convexified LBP.
-        - lambda_end (float): Ending lambda value for for convexified LBP.
-        - lambda_reduction_factor (float): Factor by which lambda is reduced at each LBP run.
-        - threshold_initial (float): Initial threshold of marginals for growing backbones seeds
-        - threshold_cutoff (float): Ending threshold of marginals for backbones.
-        - max_iterations (int): Maximum iterations for LBP to converge
-        - tolerance (float): Tolerance for convergence in LBP.
-        - use_hash_table (bool, optional): If True, the hash table will be used for caching results.
+        NMC parameters
+        :param num_sweeps_per_NMC_phase (int): Number of MCMC sweeps per NMC phase.
+        :param num_cycles (int): number of NMC cycles on each chain.
+        :param full_update_frequency (int): Frequency of all spin updates in NMC.
+        :param M_skip (int): Interval for storing results.
+        :param temp_x (int): Heated temperature factor for NMC (scales beta by dividing by temp_x)
+        :param global_beta (float): Global inverse temperature for MCMC and NMC.
+        :param lambda_start (float): Initial lambda value for convexified LBP.
+        :param lambda_end (float): Ending lambda value for for convexified LBP.
+        :param lambda_reduction_factor (float): Factor by which lambda is reduced at each LBP run.
+        :param threshold_initial (float): Initial threshold of marginals for growing backbones seeds
+        :param threshold_cutoff (float): Ending threshold of marginals for backbones.
+        :param max_iterations (int): Maximum iterations for LBP to converge
+        :param tolerance (float): Tolerance for convergence in LBP.
+        :param use_hash_table: Whether to use a hash table or not (default =False).
+        :param num_cores: How many CPU cores to use in parallel (default= 8).
 
-        Returns:
-        - Tuple: M_overall, energy_overall, min_energy
+        :return: Tuple containing:
+        - M (2D numpy array): Spin states for each replica. Rows correspond to replicas and columns to states.
+        - Energy (1D numpy array): Energy values corresponding to each replica.
         """
+        self.num_replicas = num_replicas
+        self.num_sweeps_MCMC = num_sweeps_MCMC
+        self.num_sweeps_read = num_sweeps_read
+        self.num_swap_attempts = num_swap_attempts
+        self.num_sweeps_MCMC_per_swap = self.num_sweeps_MCMC // self.num_swap_attempts
+        self.num_sweeps_read_per_swap = self.num_sweeps_read // self.num_swap_attempts
+        self.num_swapping_pairs = num_swapping_pairs
+        self.use_hash_table = use_hash_table
+        self.doNMC = doNMC
 
-        # Boolean flag to decide normalization
-        normalize = True
-        # Normalize energy with |J_ij| ~ 1
-        norm_factor = np.max(np.abs(self.J)) if normalize else 1
-        self.J = self.J / norm_factor
-        self.h = self.h / norm_factor
+        # Check if doNMC is of the correct length
+        if len(self.doNMC) != self.num_replicas:
+            raise ValueError("The length of doNMC does not match the number of replicas.")
 
-        N = len(self.h)
+        num_spins = self.J.shape[0]
+        count = np.zeros(self.num_swap_attempts)
+        swap_attempted_replicas = np.zeros((self.num_swap_attempts * self.num_swapping_pairs, 2))
+        swap_accepted_replicas = np.zeros((self.num_swap_attempts * self.num_swapping_pairs, 2))
 
-        # If use_hash_table is True, create a new hash table for this process
-        if use_hash_table:
-            hash_table = LRUCache(maxsize=10000)
-        else:
-            hash_table = None
+        # Generate all possible consecutive pairs of replicas
+        all_pairs = [(i, i + 1) for i in range(1, self.num_replicas)]
 
-        # initial MCMC to find m_star
-        m_init = np.sign(2 * np.random.rand(N) - 1)
+        # Initialize states for all replicas
+        M = np.zeros((self.num_replicas * num_spins, self.num_sweeps_MCMC))
+        m_start = np.sign(2 * np.random.rand(self.num_replicas * num_spins, 1) - 1)
 
-        # Running MCMC to find the initial m_star
-        M = self.MCMC_GC(num_sweeps_initial, m_init.copy(), global_beta, self.J, self.h, self.colorMap, anneal=True,
-                         sweeps_per_beta=1, initial_beta=0,
-                         hash_table=hash_table,
-                         use_hash_table=use_hash_table)
+        swap_index = 0
 
-        # Calculate initial energies from MCMC
-        initial_energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in range(M.shape[1])]
+        with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            for ii in range(self.num_swap_attempts):
+                print(f"\nRunning swap attempt = {ii + 1}")
+                start_time = time.time()
 
-        Energy_star = min(initial_energies)
-        min_energy_idx = np.argmin(initial_energies)
+                futures = [executor.submit(self.MCMC_task, replica_i, self.num_sweeps_MCMC,
+                                           m_start[(replica_i - 1) * num_spins:replica_i * num_spins].copy(),
+                                           beta_list, self.use_hash_table) if not self.doNMC[replica_i - 1] else
+                           executor.submit(self.NMC_task,
+                                           m_start[(replica_i - 1) * num_spins:replica_i * num_spins].copy(),
+                                           num_cycles, num_sweeps_per_NMC_phase, full_update_frequency,
+                                           M_skip, global_beta, temp_x, lambda_start, lambda_end,
+                                           lambda_reduction_factor, threshold_initial, threshold_cutoff,
+                                           max_iterations, tolerance, self.use_hash_table)
+                           for replica_i in range(1, self.num_replicas + 1)]
 
-        m_init = M[:, min_energy_idx]
-        m_star = m_init.copy()
-        print(f'\ninitial m_star energy = {Energy_star:.8f}')
+                M_results = [future.result() for future in futures]
 
-        M_overall, energy_overall, min_energy, all_clusters = self.NMC_subroutine(m_star, num_NMC_cycles,
-                                                                                  num_sweeps_per_NMC_phase,
-                                                                                  full_update_frequency, M_skip,
-                                                                                  global_beta, temp_x,
-                                                                                  lambda_start, lambda_end,
-                                                                                  lambda_reduction_factor,
-                                                                                  threshold_initial, threshold_cutoff,
-                                                                                  max_iterations,
-                                                                                  tolerance, hash_table=hash_table,
-                                                                                  use_hash_table=use_hash_table)
+                for replica_i, M_replica in enumerate(M_results, start=1):
+                    M[(replica_i - 1) * num_spins:replica_i * num_spins, :] = M_replica.copy()
 
-        # Call to the plot method
-        self.plot_results(M_overall, energy_overall, all_clusters, M_skip,
-                          num_NMC_cycles, full_update_frequency, num_sweeps_per_NMC_phase)
+                mm = M[:, -self.num_sweeps_read_per_swap:].copy().T
+                m_start = M[:, -1].copy().reshape(-1, 1)
 
-        return M_overall, energy_overall, min_energy
+                selected_pairs = self.select_non_overlapping_pairs(all_pairs)
 
-    def plot_results(self, M_overall, energy_overall, all_clusters, M_skip, num_NMC_cycles, full_update_frequency,
-                     num_sweeps_per_NMC_phase):
+                # Attempt to swap states of each selected pair of replicas
+                for pair in selected_pairs:
+                    sel, next = pair
+                    m_sel = mm[-1, (sel - 1) * num_spins:sel * num_spins].copy().T
+                    m_next = mm[-1, (next - 1) * num_spins:next * num_spins].copy().T
+
+                    E_sel = -m_sel.T @ self.J @ m_sel / 2 - m_sel.T @ self.h
+                    E_next = -m_next.T @ self.J @ m_next / 2 - m_next.T @ self.h
+                    beta_sel = beta_list[sel - 1]
+                    beta_next = beta_list[next - 1]
+
+                    print(f"\nSelected pair indices: {sel}, {next}")
+                    print(f"β values: {beta_sel}, {beta_next}")
+                    print(f"Energies: {E_sel}, {E_next}")
+
+                    swap_attempted_replicas[swap_index, :] = [sel, next]
+
+                    DeltaE = E_next - E_sel
+                    DeltaB = beta_next - beta_sel
+
+                    if np.random.rand() < min(1, np.exp(DeltaB * DeltaE)):
+                        count[ii] += 1
+                        swap_accepted_replicas[swap_index, :] = [sel, next]
+                        print(f"Swapping {int(sum(count))}th time")
+
+                        # Swap the states of the selected replicas
+                        m_start[(sel - 1) * num_spins:sel * num_spins] = m_next.copy().reshape(-1, 1)
+                        m_start[(next - 1) * num_spins:next * num_spins] = m_sel.copy().reshape(-1, 1)
+
+                    swap_index += 1
+
+                elapsed_time = time.time() - start_time
+                print(f"Elapsed time for swap attempt {ii + 1}: {elapsed_time}")
+
+        # Calculate the final energies of the replicas
+        Energy = np.zeros(self.num_replicas)
+        EE1_list = []
+        for look_replica in range(1, self.num_replicas + 1):
+            M_replica = M[(look_replica - 1) * self.J.shape[1]:look_replica * self.J.shape[1], :]
+            minEnergy, EE1 = self.replica_energy(M_replica, self.num_sweeps_read)
+            Energy[look_replica - 1] = minEnergy
+            EE1_list.append(EE1)
+
+        # Output the results
+        print(f"\nLatest energy from each replica = {Energy}")
+        print(f"Swap acceptance rate = {np.count_nonzero(count) / count.size * 100:.2f} per cent\n")
+
+        # Plot the energy traces
+        self.plot_energies(EE1_list, beta_list)
+        return M, Energy
+
+    def plot_energies(self, EE1_list, beta_list):
         """
-        Plot the spin configurations and energy evolution.
+        Plot the energy traces of all replicas.
 
-        Parameters:
-        - M_overall (numpy.ndarray): The overall magnetization/spin data.
-        - energy_overall (numpy.ndarray): Energy data for each sweep.
-        - all_clusters (numpy.ndarray): Indices of all clusters.
-        - M_skip (int): Number of sweeps to skip for the magnetization plot.
-        - num_NMC_cycles (int): Total number of NMC cycles.
-        - full_update_frequency (int): Frequency of full updates in the NMC cycles.
-        - num_sweeps_per_NMC_phase (int): Number of sweeps per NMC phase.
-
-        Returns:
-        None. This method shows plots as output.
+        :param EE1_list: A list of 1D numpy arrays representing the energy traces of the replicas.
+        :param beta_list: A 1D numpy array representing the inverse temperatures for the replicas.
         """
-
-        N = len(self.h)  # Get the size of the spin system
-
-        # Creating the first figure to visualize the cluster spins
-        fig, axes = plt.subplots(2, 1, figsize=(10, 10))
-
-        # Plotting cluster spins
-        axes[0].imshow(M_overall[all_clusters, ::M_skip], aspect='auto', cmap='viridis')
-        axes[0].set_xlabel('number of sweeps', fontsize=14, fontweight='bold')
-        axes[0].set_ylabel('cluster index', fontsize=14, fontweight='bold')
-        axes[0].tick_params(axis='both', which='major', labelsize=14)
-
-        # Counter for plotting vertical lines and labels at appropriate positions
-        counter = 1
-
-        # Vertical lines and labels for the NMC cycles
-        for i in range(num_NMC_cycles):
-            axes[0].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            axes[0].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'C', fontsize=14,
-                         ha='center', color='red', fontweight='bold')
-            counter += 1
-
-            axes[0].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            axes[0].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'NC', fontsize=14,
-                         ha='center', color=(0, 0.5, 0), fontweight='bold')
-            counter += 1
-
-            if i % full_update_frequency == 0:
-                axes[0].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-                axes[0].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'ALL', fontsize=14,
-                             ha='center', color='blue', fontweight='bold')
-                counter += 1
-
-        non_cluster_indices = np.setdiff1d(np.arange(N), all_clusters)
-
-        # Plotting non-cluster spins
-        axes[1].imshow(M_overall[non_cluster_indices, ::M_skip], aspect='auto', cmap='viridis')
-        axes[1].set_xlabel('number of sweeps', fontsize=14, fontweight='bold')
-        axes[1].set_ylabel('non-cluster index', fontsize=14, fontweight='bold')
-        axes[1].tick_params(axis='both', which='major', labelsize=14)
-
-        # Resetting the counter for the non-cluster plot
-        counter = 1
-
-        # Vertical lines and labels for the NMC cycles (similar to above)
-        for i in range(num_NMC_cycles):
-            axes[1].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            axes[1].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'C', fontsize=14,
-                         ha='center', color='red', fontweight='bold')
-            counter += 1
-
-            axes[1].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            axes[1].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'NC', fontsize=14,
-                         ha='center', color=(0, 0.5, 0), fontweight='bold')
-            counter += 1
-
-            if i % full_update_frequency == 0:
-                axes[1].axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-                axes[1].text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, -5, 'ALL', fontsize=14,
-                             ha='center', color='blue', fontweight='bold')
-                counter += 1
-
-        plt.tight_layout()
-        plt.show()
-
-        # Creating a separate figure for the energy evolution
-        ymax = np.percentile(energy_overall, 100)  # Adjust the percentile as needed
-        ymin = np.min(energy_overall)
-        fig, ax = plt.subplots(figsize=(10, 5))
-
-        # Plotting the energy values
-        ax.plot(np.arange(0, len(energy_overall) * M_skip, M_skip), energy_overall)
-        ax.set_xlabel('number of sweeps', fontsize=14, fontweight='bold')
-        ax.set_ylabel('energy', fontsize=14, fontweight='bold')
-        ax.tick_params(axis='both', which='major', labelsize=14)
-        ax.set_ylim([ymin, ymax])
-
-        # Resetting the counter for the energy plot
-        counter = 1
-        label_position = ymin + 0.05 * (ymax - ymin)  # Position labels 5% above the minimum
-
-        # Vertical lines and labels for the NMC cycles (similar to above)
-        for i in range(num_NMC_cycles):
-            ax.axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            ax.text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, label_position, 'C', fontsize=14,
-                    ha='center', color='red', fontweight='bold')
-            counter += 1
-
-            ax.axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-            ax.text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, label_position, 'NC',
-                    fontsize=14, ha='center', color=(0, 0.5, 0), fontweight='bold')
-            counter += 1
-
-            if i % full_update_frequency == 0:
-                ax.axvline(x=counter * num_sweeps_per_NMC_phase, color='k', linewidth=2)
-                ax.text(counter * num_sweeps_per_NMC_phase - num_sweeps_per_NMC_phase / 2, label_position, 'ALL',
-                        fontsize=14, ha='center', color='blue', fontweight='bold')
-                counter += 1
-
-        plt.tight_layout()
-        plt.show()
+        plt.figure()
+        for i in range(self.num_replicas):
+            plt.plot(EE1_list[i], label=f"Replica {i + 1} (β={beta_list[i]:.2f})")
+        plt.xlabel('Sweeps')
+        plt.ylabel('Energy')
+        plt.title('Energy traces for different replicas')
+        plt.legend()
+        # plt.show()
+        plt.savefig('APT_energy.png')
 
 
 def main():
-    # Load J and h from .npy files
-    # J = np.load('J.npy')
-    # h = np.load('h.npy')
+    # Load the coupling and external field matrices, and the list of inverse temperatures
+    J = np.load('J.npy')
+    h = np.load('h.npy')
+    J = csr_matrix(J)  # Convert the dense matrix to a sparse one
 
-    # Assumes that the keys in mat files are 'J' and 'h'
-    J = loadmat('JJ.mat')['J']
-    h = loadmat('h.mat')['h']
-    h = np.asarray(h).copy().reshape(-1)  # Reshape h into a 1D array
+    beta_list = np.load('beta_list_python.npy')
+    print(f"[INFO] Beta List: {beta_list}")
 
-    # Create an instance of NMC class
-    nmc_instance = NMC(J, h)
+    num_replicas = beta_list.shape[0]
+    print(f"[INFO] Number of replicas: {num_replicas}")
 
-    # Set hyperparameters (adjust to your specific needs)
-    num_sweeps_initial = int(1e4)
+    norm_factor = np.max(np.abs(J))
+    beta_list = beta_list / norm_factor
+    print(f"[INFO] Normalized Beta List: {beta_list}")
+
+    # Define NPT parameters for easier user access
+    num_sweeps_MCMC = int(1e4)
+    num_sweeps_read = int(1e3)
+    num_swap_attempts = int(1e2)
+    num_swapping_pairs = 1
+    use_hash_table = False
+    num_cores = 8
+
+    # Define NMC parameters for easier user access
+    doNMC = [False] * (num_replicas - 5) + [True] * 5
     num_sweeps_per_NMC_phase = int(1e4)
-    num_NMC_cycles = 10
+    num_cycles = 10
     full_update_frequency = 1
     M_skip = 1
     temp_x = 20
@@ -694,18 +751,38 @@ def main():
     threshold_cutoff = 1
     max_iterations = 100
     tolerance = np.finfo(float).eps
-    use_hash_table = True  # Flag to decide whether to use hash table
+    use_hash_table = True
 
-    # Execute the run method
-    M_overall, energy_overall, min_energy = nmc_instance.run(num_sweeps_initial, num_sweeps_per_NMC_phase,
-                                                             num_NMC_cycles, full_update_frequency, M_skip, temp_x,
-                                                             global_beta, lambda_start, lambda_end,
-                                                             lambda_reduction_factor, threshold_initial,
-                                                             threshold_cutoff,
-                                                             max_iterations, tolerance, use_hash_table=use_hash_table)
+    # Create an NPT instance
+    npt = NPT(J.copy(), h.copy())
 
-    print(f"Minimum Energy: {min_energy:.8f}")
+    # Run NPT
+    M, Energy = npt.run(
+        beta_list=beta_list,
+        num_replicas=num_replicas,
+        doNMC=doNMC,
+        num_sweeps_MCMC=num_sweeps_MCMC,
+        num_sweeps_read=num_sweeps_read,
+        num_swap_attempts=num_swap_attempts,
+        num_swapping_pairs=num_swapping_pairs,
+        num_sweeps_per_NMC_phase=num_sweeps_per_NMC_phase,
+        num_cycles=num_cycles,
+        full_update_frequency=full_update_frequency,
+        M_skip=M_skip,
+        temp_x=temp_x,
+        global_beta=global_beta,
+        lambda_start=lambda_start,
+        lambda_end=lambda_end,
+        lambda_reduction_factor=lambda_reduction_factor,
+        threshold_initial=threshold_initial,
+        threshold_cutoff=threshold_cutoff,
+        max_iterations=max_iterations,
+        tolerance=tolerance,
+        use_hash_table=use_hash_table,
+        num_cores=num_cores
+    )
 
+    print(Energy)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
