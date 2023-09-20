@@ -8,8 +8,7 @@ This repository contains:
 1. The primary non-local [NMC script](https://github.com/usra-riacs/Nonlocal-Monte-Carlo/blob/main/NMC/nmc.py)
 2. A [preprocessing script for NPT](https://github.com/usra-riacs/Nonlocal-Monte-Carlo/blob/main/NPT/apt_preprocessor.py)
 3. The hybrid APT+NMC [NPT script](https://github.com/usra-riacs/Nonlocal-Monte-Carlo/blob/main/NPT/npt.py)
-
-It also contains an additional script [apt_ICM](https://github.com/usra-riacs/Nonlocal-Monte-Carlo/blob/main/NPT/apt_ICM.py) for benchmarking NPT with traditional Iso-cluster Move (ICM) coupled with APT.
+4. An additional script [apt_ICM](https://github.com/usra-riacs/Nonlocal-Monte-Carlo/blob/main/NPT/apt_ICM.py) for benchmarking NPT with traditional Iso-cluster Move (ICM) coupled with APT.
 
 ## Table of Contents
 
