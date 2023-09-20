@@ -22,7 +22,7 @@ This repository contains:
 
 ## Background
 
-The Non-Local Monte-Carlo (NMC) method is a powerful algorithmic approach designed for optimization and sampling in complex landscapes of Ising models. The further refined Non-Local Monte-Carlo with Adaptive Parallel Tempering (NPT) enhances this approach, incorporating Adaptive Parallel Tempering (APT).
+The Non-Local Monte-Carlo (NMC) method is a powerful algorithmic approach designed for optimization and sampling in complex landscapes such as found in Ising models. The further refined Non-Local Monte-Carlo with Adaptive Parallel Tempering (NPT) enhances this approach, incorporating Adaptive Parallel Tempering (APT).
 
 ## Installation
 
