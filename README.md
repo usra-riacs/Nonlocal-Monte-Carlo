@@ -168,7 +168,7 @@ print(Energy)
 print("\n[INFO] NPT process complete.")
 
 ```
-### 3. Running Adaptive Parallel Tempering with Iso-cluster Move (APT + ICM) for benchmarking:
+### 3. Using the APT+ICM method for benchmarking:
 
 After preprocessing same as NPT mentioned above, proceed with the main Adaptive Parallel Tempering + ICM moves:
 
