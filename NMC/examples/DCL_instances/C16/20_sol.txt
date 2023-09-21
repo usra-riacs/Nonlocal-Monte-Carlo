@@ -1,0 +1,7 @@
+       exo_type              2
+              L             16
+              l            7.0
+              R              1
+             nq           1873
+          alpha           0.24
+     min_energy    -1649.28571

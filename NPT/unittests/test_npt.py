@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from npt import NPT
+from ..npt import NPT
 import os
 
 class TestNPT(unittest.TestCase):

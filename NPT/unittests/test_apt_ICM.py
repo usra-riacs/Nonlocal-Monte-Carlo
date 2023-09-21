@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from apt_ICM import APT_ICM  # Import from apt_ICM file
+from ..apt_ICM import APT_ICM  # Import from apt_ICM file
 import os
 
 class TestAPT_ICM(unittest.TestCase):

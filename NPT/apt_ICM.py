@@ -13,7 +13,7 @@ from random import randint
 
 class APT_ICM:
     """
-    The apt_ICM class is used to implement the Adaptive Parallel Tempering algorithm with Iso-cluster Move (ICM or Houdayer's move)..
+    The apt_ICM class is used to implement the Adaptive Parallel Tempering algorithm with Iso-cluster Move (ICM or Houdayer's move).
     """
 
     def __init__(self, J, h):
@@ -33,7 +33,6 @@ class APT_ICM:
             h = h[:, np.newaxis]
         self.h = h
 
-        self.colorMap = self.greedy_coloring_saturation_largest_first()
 
     def replica_energy(self, M, num_sweeps):
         """
@@ -51,95 +50,48 @@ class APT_ICM:
         minEnergy = np.min(EE1)
         return minEnergy, EE1
 
-    def greedy_coloring_saturation_largest_first(self):
+
+    def MCMC(self, num_sweeps, m_start, beta, hash_table=None, use_hash_table=False):
         """
-        Perform greedy coloring using the saturation largest first strategy.
+        Implements the Markov Chain Monte Carlo (MCMC) method using Gibbs sampling.
 
-        :return colorMap: A 1D numpy array containing the colormap of the graph.
+        Parameters:
+        - num_sweeps (int): Number of MCMC sweeps to be performed.
+        - m_start (np.array[N,]): Initial seed value of the states, where N is the size of the graph.
+        - beta (float): Inverse temperature.
+        - hash_table (LRUCache, optional): An LRUCache object for storing previously computed dE values.
+        - use_hash_table (bool, optional, default=False): If set to True, utilizes the hash table for caching results.
+
+        Returns:
+        - M (np.array[N, num_sweeps]): Matrix containing all the sweeps in bipolar form.
         """
-        # Create a NetworkX graph from the J matrix
-        G = nx.Graph(self.J)
 
-        # Perform greedy coloring with the saturation largest first strategy
-        color_map = nx.coloring.greedy_color(G, strategy='saturation_largest_first')
-
-        # Convert the color map to a 1D numpy array
-        colorMap = np.array([color_map[node] for node in G.nodes])
-
-        return colorMap
-
-    def MCMC_GC(self, num_sweeps_MCMC, m_start, beta, hash_table, use_hash_table=0):
-        """
-        Perform MCMC with graph coloring.
-
-        :param num_sweeps_MCMC: An integer representing the number of MCMC sweeps.
-        :param m_start: A 1D numpy array representing the initial state.
-        :param beta: A float representing the inverse temperature.
-        :param hash_table: A LRUCache object used to store previously calculated dE values.
-        :param use_hash_table: A boolean flag. If True, a hash table will be used for caching results. (default = 0)
-
-        :return M: A 2D numpy array representing the MCMC state after each sweep.
-        """
         N = self.J.shape[0]
-        m = m_start.copy()
-        M = np.zeros((N, num_sweeps_MCMC))
-        J = csr_matrix(self.J)
+        m = np.asarray(m_start).copy().reshape(-1, 1)
+        M = np.zeros((N, num_sweeps))
 
-        if self.h.shape[0] == 1:
-            self.h = self.h.T
+        for jj in range(num_sweeps):
+            spin_state = tuple(m.ravel())
 
-        # Group spins by color
-        required_colors = len(np.unique(self.colorMap))
-        Groups = [None] * required_colors
-        for k in range(required_colors):
-            Groups[k] = np.where(self.colorMap == k)[0]
-
-        # Create a list of grouped J and h matrices
-        J_grouped = [J[Groups[k], :] for k in range(required_colors)]
-        h_grouped = [self.h[Groups[k]] for k in range(required_colors)]
-
-        for jj in range(num_sweeps_MCMC):
-            for ijk in range(required_colors):
-                group = Groups[ijk]
-                spin_state = tuple(m.ravel())
-
+            for kk in np.random.permutation(N):
                 if use_hash_table:
                     if not isinstance(hash_table, LRUCache):
-                        raise ValueError("hash_table must be an instance of cachetools.LRUCache")
+                        raise ValueError("hash_table must be an instance of LRUCache")
 
                     if spin_state in hash_table:
                         dE = hash_table[spin_state]
                     else:
-                        dE = J.dot(m) + self.h
+                        dE = self.J.dot(m) + self.h
                         hash_table[spin_state] = dE
 
-                    m[group] = np.sign(np.tanh(beta * dE[group]) - 2 * np.random.rand(len(group), 1) + 1)
+                    m[kk] = np.sign(np.tanh(beta * dE[kk]) - 2 * np.random.rand() + 1)
                 else:
-                    x = J_grouped[ijk].dot(m) + h_grouped[ijk]
-                    m[group] = np.sign(np.tanh(beta * x) - 2 * np.random.rand(len(group), 1) + 1)
+                    x = self.J.dot(m) + self.h
+                    m[kk] = np.sign(np.tanh(beta * x[kk]) - 2 * np.random.rand() + 1)
 
-            M[:, jj] = m.copy().ravel()
+            M[:, jj] = m.ravel()
 
         return M
-
-    def MCMC_task(self, replica_i, num_sweeps_MCMC, m_start, beta_list, use_hash_table=0):
-        """
-        Perform a Monte Carlo simulation for a single task.
-
-        This method is designed to be run in a separate process.
-
-        :param m_start: A 1D numpy array representing the initial state.
-        :param beta_list: A 1D numpy array representing the inverse temperatures for the replicas.
-        :param num_sweeps_MCMC: An integer representing the number of MCMC sweeps.
-        :param use_hash_table: A boolean flag. If True, a hash table will be used for caching results. (default = 0)
-        """
-
-        # If use_hash_table is True, create a new hash table for this process
-        if use_hash_table:
-            hash_table = LRUCache(maxsize=10000)
-        else:
-            hash_table = None
-        return self.MCMC_GC(num_sweeps_MCMC, m_start.copy(), beta_list[replica_i - 1], hash_table, use_hash_table)
 
     def select_non_overlapping_pairs(self, all_pairs):
         """
@@ -217,69 +169,95 @@ class APT_ICM:
         self.num_swapping_pairs = num_swapping_pairs
         self.use_hash_table = use_hash_table
 
+        # If use_hash_table is True, create a new hash table for this process
+        if use_hash_table:
+            hash_table = LRUCache(maxsize=10000)
+        else:
+            hash_table = None
+
+        num_subreplicas = 10
+        useKatzgraber = True
         num_spins = self.J.shape[0]
         count = np.zeros(self.num_swap_attempts)
-        swap_attempted_replicas = np.zeros((self.num_swap_attempts * self.num_swapping_pairs, 2))
-        swap_accepted_replicas = np.zeros((self.num_swap_attempts * self.num_swapping_pairs, 2))
+        swap_attempted_replicas = np.zeros((self.num_swap_attempts * self.num_swapping_pairs*num_subreplicas, 2))
+        swap_accepted_replicas = np.zeros((self.num_swap_attempts * self.num_swapping_pairs*num_subreplicas, 2))
 
         # Generate all possible consecutive pairs of replicas
         all_pairs = [(i, i + 1) for i in range(1, self.num_replicas)]
 
-        num_subreplicas = 10
-        useKatzgraber = True
-        m_start_matrix = np.sign(2 * np.random.rand(len(self.J) * self.num_replicas, num_subreplicas) - 1)
         M = np.zeros((len(self.J) * self.num_replicas, self.num_sweeps_MCMC_per_swap * num_subreplicas))
+        m_start_matrix = np.sign(2 * np.random.rand(len(self.J) * self.num_replicas, num_subreplicas) - 1)
+
         swap_index = 0
 
-        with ProcessPoolExecutor(max_workers=num_cores) as executor:
-            for ii in range(self.num_swap_attempts):
-                print(f"\nRunning swap attempt = {ii + 1}")
-                start_time = time.time()
-                futures = []
-                for replica_i in range(self.num_replicas):
-                    for sub_replica_j in range(num_subreplicas):
-                        start_index = replica_i * len(self.J)
-                        end_index = (replica_i + 1) * len(self.J)
-                        current_m_start = m_start_matrix[start_index:end_index, sub_replica_j]
-                        futures.append(executor.submit(self.MCMC_task, replica_i, self.num_sweeps_MCMC_per_swap, current_m_start, beta_list, False))
+        for ii in range(int(self.num_swap_attempts)):
+            print(f"\nRunning swap attempt = {ii + 1}")
+            start_time = time.time()
 
-                M_results = [future.result() for future in futures]
-                result_index = 0
-                for replica_i in range(self.num_replicas):
-                    for sub_replica_j in range(num_subreplicas):
-                        start_index = replica_i * len(self.J)
-                        end_index = (replica_i + 1) * len(self.J)
-                        M[start_index:end_index, (sub_replica_j * self.num_sweeps_MCMC_per_swap):((sub_replica_j + 1) * self.num_sweeps_MCMC_per_swap)] = M_results[result_index]
-                        result_index += 1
+            # Generate MCMC sweeps for replicas and sub-replicas
+            for replica_i in range(self.num_replicas):
+                for sub_replica_j in range(num_subreplicas):
+                    start_index = replica_i * num_spins
+                    end_index = (replica_i + 1) * num_spins
+
+                    current_m_start = m_start_matrix[start_index:end_index, sub_replica_j]
+
+                    # Generate new state with MCMC
+                    M_temp = self.MCMC(self.num_sweeps_MCMC_per_swap, current_m_start, beta_list[replica_i],
+                                          hash_table=hash_table, use_hash_table=self.use_hash_table)
+
+                    # Store the MCMC-generated states in M
+                    M[start_index:end_index, sub_replica_j * self.num_sweeps_MCMC_per_swap:(sub_replica_j + 1) * self.num_sweeps_MCMC_per_swap] = M_temp
+
+                    # Update the starting matrix for next iteration
+                    m_start_matrix[start_index:end_index, sub_replica_j] = M_temp[:, -1]
 
             # Houdayer's Move
-            for replica_i in range(self.num_replicas):
+            for replica_i in range(num_replicas):
                 shuffled_indices = np.random.permutation(num_subreplicas)
                 num_pairs = num_subreplicas // 2
+
                 for pair_idx in range(num_pairs):
-                    sub_replica_j = shuffled_indices[2*pair_idx]
-                    sub_replica_k = shuffled_indices[2*pair_idx + 1]
-                    state_1 = M[(replica_i * len(self.J)):(replica_i + 1) * len(self.J), sub_replica_j]
-                    state_2 = M[(replica_i * len(self.J)):(replica_i + 1) * len(self.J), sub_replica_k]
+                    sub_replica_j = shuffled_indices[2 * pair_idx]
+                    sub_replica_k = shuffled_indices[2 * pair_idx + 1]
+
+                    # Extract states for clusters
+                    state_1 = M[replica_i * num_spins:(replica_i + 1) * num_spins,
+                              sub_replica_j * self.num_sweeps_MCMC_per_swap]
+                    state_2 = M[replica_i * num_spins:(replica_i + 1) * num_spins,
+                              sub_replica_k * self.num_sweeps_MCMC_per_swap]
+
                     clusters = self.find_disagreement_clusters(state_1, state_2, self.J)
+
                     if clusters:
-                        selected_cluster = random.choice(clusters)
-                        if useKatzgraber and len(selected_cluster) > len(self.J) / 2:
+                        selected_cluster = clusters[np.random.randint(len(clusters))]
+
+                        # Katzgraber's modification
+                        if useKatzgraber and len(selected_cluster) > num_spins // 2:
                             state_1 = -state_1
                         else:
-                            state_1[selected_cluster], state_2[selected_cluster] = state_2[selected_cluster], state_1[selected_cluster]
-                        M[(replica_i * len(self.J)):(replica_i + 1) * len(self.J), sub_replica_j] = state_1
-                        M[(replica_i * len(self.J)):(replica_i + 1) * len(self.J), sub_replica_k] = state_2
+                            state_1[selected_cluster], state_2[selected_cluster] = state_2[selected_cluster], state_1[
+                                selected_cluster]
 
-            # PT Swap
-            mm = M[:, -self.num_sweeps_read_per_swap:].copy().T
+                        # Update the M matrix with swapped states
+                        M[replica_i * num_spins:(replica_i + 1) * num_spins,
+                        sub_replica_j * self.num_sweeps_MCMC_per_swap] = state_1
+                        M[replica_i * num_spins:(replica_i + 1) * num_spins,
+                        sub_replica_k * self.num_sweeps_MCMC_per_swap] = state_2
+
+            selected_pairs = self.select_non_overlapping_pairs(all_pairs)
+
+            # PT Swap for each sub-replica
             for chosen_subreplica in range(num_subreplicas):
-                mm_temp = mm[:, (chosen_subreplica * self.num_sweeps_MCMC_per_swap):((chosen_subreplica + 1) * self.num_sweeps_MCMC_per_swap)]
-                selected_pairs = self.select_non_overlapping_pairs(all_pairs)
+                mm = M[:, chosen_subreplica * self.num_sweeps_MCMC_per_swap:(chosen_subreplica + 1) * self.num_sweeps_MCMC_per_swap].T
+
+                # Attempt to swap states of each selected pair of replicas
                 for pair in selected_pairs:
                     sel, next = pair
-                    m_sel = mm_temp[-1, (sel - 1) * len(self.J):sel * len(self.J)].copy().T
-                    m_next = mm_temp[-1, (next - 1) * len(self.J):next * len(self.J)].copy().T
+
+                    m_sel = mm[-1, (sel - 1) * num_spins:sel * num_spins].T
+                    m_next = mm[-1, (next - 1) * num_spins:next * num_spins].T
+
                     E_sel = -m_sel.T @ self.J @ m_sel / 2 - m_sel.T @ self.h
                     E_next = -m_next.T @ self.J @ m_next / 2 - m_next.T @ self.h
                     beta_sel = beta_list[sel - 1]
@@ -289,19 +267,19 @@ class APT_ICM:
                     print(f"β values: {beta_sel}, {beta_next}")
                     print(f"Energies: {E_sel}, {E_next}")
 
-                    swap_attempted_replicas[swap_index, :] = [sel, next]
+                    swap_attempted_replicas[swap_index] = [sel, next]
 
                     DeltaE = E_next - E_sel
                     DeltaB = beta_next - beta_sel
 
                     if np.random.rand() < min(1, np.exp(DeltaB * DeltaE)):
                         count[ii] += 1
-                        swap_accepted_replicas[swap_index, :] = [sel, next]
-                        print(f"Swapping {int(sum(count))}th time")
+                        swap_accepted_replicas[swap_index] = [sel, next]
+                        print(f"swapping {np.sum(count)}th time")
 
-                        # Swap the states of the selected replicas for the specific sub_replica
-                        m_start_matrix[(sel - 1) * len(self.J):(sel * len(self.J)),chosen_subreplica] = m_next.copy().reshape(-1)
-                        m_start_matrix[(next - 1) * len(self.J):(next * len(self.J)),chosen_subreplica] = m_sel.copy().reshape(-1)
+                        # Swap the states of the selected replicas
+                        m_start_matrix[(sel - 1) * num_spins:sel * num_spins, chosen_subreplica] = m_next
+                        m_start_matrix[(next - 1) * num_spins:next * num_spins, chosen_subreplica] = m_sel
 
                     swap_index += 1
 
@@ -343,7 +321,6 @@ class APT_ICM:
         plt.savefig('APT_ICM_energy..png')
 
 
-
 def main():
     # Load the coupling and external field matrices, and the list of inverse temperatures
     J = np.load('J.npy')
@@ -362,8 +339,8 @@ def main():
     print(f"[INFO] Number of replicas: {num_replicas}")
 
     norm_factor = np.max(np.abs(J))
-    beta_list = beta_list / norm_factor
-    print(f"[INFO] Normalized Beta List: {beta_list}")
+    J = J / norm_factor
+    h = h / norm_factor
 
     # Initiate the main APT_ICM run
     print("\n[INFO] Starting main Adaptive Parallel Tempering process with ICM moves...")
@@ -373,12 +350,12 @@ def main():
 
     # run Adaptive Parallel Tempering with ICM move
     M, Energy = apt_ICM.run(beta_list, num_replicas=num_replicas,
-                        num_sweeps_MCMC=int(1e4),
-                        num_sweeps_read=int(1e3),
-                        num_swap_attempts=int(1e2),
-                        num_swapping_pairs=1, use_hash_table=0, num_cores=8)
+                            num_sweeps_MCMC=int(1e4),
+                            num_sweeps_read=int(1e3),
+                            num_swap_attempts=int(1e2),
+                            num_swapping_pairs=1, use_hash_table=0, num_cores=8)
 
-    #print(M)
+    # print(M)
     print(Energy)
 
 

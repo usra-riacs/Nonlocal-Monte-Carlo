@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from apt_preprocessor import APT_preprocessor
+from ..apt_preprocessor import APT_preprocessor
 import os
 
 

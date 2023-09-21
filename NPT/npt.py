@@ -28,8 +28,6 @@ class NPT:
         self.h = h
         self.h = np.asarray(h).reshape(-1)  # Reshape h into a 1D array
 
-        self.colorMap = self.greedy_coloring_saturation_largest_first()
-
     def replica_energy(self, M, num_sweeps):
         """
         Calculate the energy of a given replica over a number of sweeps.
@@ -46,27 +44,10 @@ class NPT:
         minEnergy = np.min(EE1)
         return minEnergy, EE1
 
-    def greedy_coloring_saturation_largest_first(self):
+    def MCMC(self, num_sweeps, m_start, beta, J, h, anneal=False, sweeps_per_beta=1, initial_beta=0,
+             hash_table=None, use_hash_table=False):
         """
-        Perform greedy coloring using the saturation largest first strategy.
-
-        :return colorMap: A 1D numpy array containing the colormap of the graph.
-        """
-        # Create a NetworkX graph from the J matrix
-        G = nx.Graph(self.J)
-
-        # Perform greedy coloring with the saturation largest first strategy
-        color_map = nx.coloring.greedy_color(G, strategy='saturation_largest_first')
-
-        # Convert the color map to a 1D numpy array
-        colorMap = np.array([color_map[node] for node in G.nodes])
-
-        return colorMap
-
-    def MCMC_GC(self, num_sweeps, m_start, beta, J, h, colorMap, anneal=False, sweeps_per_beta=1, initial_beta=0,
-                hash_table=None, use_hash_table=False):
-        """
-        Implements the Markov Chain Monte Carlo (MCMC) method using Gibbs sampling and Graph coloring.
+        Implements the Markov Chain Monte Carlo (MCMC) method using Gibbs sampling.
 
         Parameters:
         - num_sweeps (int): Number of MCMC sweeps to be performed.
@@ -74,11 +55,10 @@ class NPT:
         - beta (float): Inverse temperature. Use the maximum value if anneal is set to True.
         - J (np.array[N, N]): Weight matrix where N is the size of the graph.
         - h (np.array[N,]): Bias values where N is the size of the graph.
-        - colorMap (np.array[N,]): Color assignments for the nodes where N is the size of the graph.
         - anneal (bool, default=False): Set to True for annealing, else False.
         - sweeps_per_beta (int, optional, default=1): Number of sweeps to perform at each beta level during annealing.
         - initial_beta (float, optional, default=0): Initial value for beta when annealing.
-        - hash_table (LRUCache, optional): A LRUCache object for storing previously computed dE values.
+        - hash_table (cachetools.LRUCache, optional): An LRUCache object for storing previously computed dE values.
         - use_hash_table (bool, optional, default=False): If set to True, utilizes the hash table for caching results.
 
         Returns:
@@ -86,18 +66,11 @@ class NPT:
         """
 
         N = J.shape[0]
-        m = np.asarray(m_start).copy().reshape(-1, 1)  # Make sure m_star is a numpy array and has shape (N, 1) and also create a copy
+        m = np.asarray(m_start).copy().reshape(-1,
+                                               1)  # Make sure m_star is a numpy array and has shape (N, 1) and also create a copy
         M = np.zeros((N, num_sweeps))
         J = csr_matrix(J)
         h = np.asarray(h).copy().reshape(-1, 1)  # Make sure h is a numpy array and has shape (N, 1)
-
-        required_colors = len(np.unique(colorMap))
-        Groups = [None] * required_colors
-        for k in range(required_colors):
-            Groups[k] = np.where(colorMap == k)[0]
-
-        J_grouped = [J[Groups[k], :] for k in range(required_colors)]
-        h_grouped = [h[Groups[k]] for k in range(required_colors)]
 
         num_betas = num_sweeps // sweeps_per_beta
         if anneal:
@@ -106,6 +79,7 @@ class NPT:
         beta_idx = 0
 
         for jj in range(num_sweeps):
+
             if anneal:
                 if jj % sweeps_per_beta == 0 and beta_idx < num_betas - 1:
                     beta_idx += 1
@@ -113,10 +87,9 @@ class NPT:
             else:
                 beta_run[jj] = beta
 
-            for ijk in range(required_colors):
-                group = Groups[ijk]
-                spin_state = tuple(m.ravel())
+            spin_state = tuple(m.ravel())
 
+            for kk in np.random.permutation(N):
                 if use_hash_table:
                     if not isinstance(hash_table, LRUCache):
                         raise ValueError("hash_table must be an instance of cachetools.LRUCache")
@@ -127,14 +100,15 @@ class NPT:
                         dE = J.dot(m) + h
                         hash_table[spin_state] = dE
 
-                    m[group] = np.sign(np.tanh(beta_run[jj] * dE[group]) - 2 * np.random.rand(len(group), 1) + 1)
+                    m[kk] = np.sign(np.tanh(beta_run[jj] * dE[kk]) - 2 * np.random.rand() + 1)
                 else:
-                    x = J_grouped[ijk].dot(m) + h_grouped[ijk]
-                    m[group] = np.sign(np.tanh(beta_run[jj] * x) - 2 * np.random.rand(len(group), 1) + 1)
+                    x = J.dot(m) + h
+                    m[kk] = np.sign(np.tanh(beta_run[jj] * x[kk]) - 2 * np.random.rand() + 1)
 
-                M[:, jj] = m.ravel()
+            M[:, jj] = m.ravel()
 
         return M
+
 
     def MCMC_task(self, replica_i, num_sweeps_MCMC, m_start, beta_list, use_hash_table=False, hash_table=None):
         """
@@ -150,8 +124,8 @@ class NPT:
         :param hash_table (LRUCache, optional): A LRUCache object for storing previously computed dE values.
         """
 
-        return self.MCMC_GC(num_sweeps_MCMC, m_start.copy(), beta_list[replica_i - 1], self.J, self.h, self.colorMap,
-                            hash_table=hash_table, use_hash_table=use_hash_table)
+        return self.MCMC(num_sweeps_MCMC, m_start.copy(), beta_list[replica_i - 1], self.J, self.h,
+                         hash_table=hash_table, use_hash_table=use_hash_table)
 
     def LBP_convexified(self, lambda_start, lambda_end, lambda_reduction_factor, m_star, epsilon, tolerance,
                         max_iterations, threshold_initial, threshold_cutoff, global_beta):
@@ -203,7 +177,8 @@ class NPT:
 
             # Handle the case when LBP diverges
             if iteration_LBP == max_iterations - 1 and lambda_val == lambda_start:
-                raise ValueError('LBP diverged at initial lambda, please try a larger lambda_start or increase max_iterations or beta')
+                raise ValueError(
+                    'LBP diverged at initial lambda, please try a larger lambda_start or increase max_iterations or beta')
             elif iteration_LBP == max_iterations - 1 and lambda_val != lambda_start:
                 lambda_end = lambda_val
                 marginal = marginal_LBP_prev
@@ -281,7 +256,6 @@ class NPT:
 
         # Remove self-correlations
         correlations = correlations - np.diag(np.diag(correlations))
-
 
         # Compute h_tilde using the magnetizations
         h_tilde = (1 / beta) * self.atanh_saturated(magnetizations)
@@ -451,9 +425,9 @@ class NPT:
 
             h_c[non_clusters] = m_init[non_clusters] * 10000  # Strongly bias the non-cluster spins to keep them frozen
             # caution: hash_table is not used as J and h are being scaled by temp_x.
-            M = self.MCMC_GC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, J_c, h_c, self.colorMap,
-                             anneal=False, hash_table=hash_table,
-                             use_hash_table=False)  # Run MCMC for clusters
+            M = self.MCMC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, J_c, h_c,
+                          anneal=False, hash_table=hash_table,
+                          use_hash_table=False)  # Run MCMC for clusters
             energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in
                         range(M.shape[1])]  # Compute energies
 
@@ -469,9 +443,9 @@ class NPT:
                                      all_clusters] * 10000  # Strongly bias the cluster (backbones) spins to keep them frozen
 
             # caution: hash_table is not used as h_nc is not same as h
-            M = self.MCMC_GC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, J_nc, h_nc, self.colorMap,
-                             anneal=False, hash_table=hash_table,
-                             use_hash_table=False)  # Run MCMC for non-clusters
+            M = self.MCMC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, J_nc, h_nc,
+                          anneal=False, hash_table=hash_table,
+                          use_hash_table=False)  # Run MCMC for non-clusters
             energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in
                         range(M.shape[1])]  # Compute energies
 
@@ -485,8 +459,8 @@ class NPT:
 
             # Full update after every full_update_frequency cycles
             if cycle % full_update_frequency == 0:
-                M = self.MCMC_GC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, self.J, self.h, self.colorMap,
-                                 anneal=False, hash_table=hash_table, use_hash_table=use_hash_table)
+                M = self.MCMC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, self.J, self.h,
+                              anneal=False, hash_table=hash_table, use_hash_table=use_hash_table)
                 energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in range(M.shape[1])]
 
                 # Store results
@@ -775,7 +749,7 @@ def main():
     full_update_frequency = 1
     M_skip = 1
     temp_x = 20
-    global_beta = 1/0.366838*5
+    global_beta = 1 / 0.366838 * 5
     lambda_start = 3
     lambda_end = 0.01
     lambda_reduction_factor = 0.9
