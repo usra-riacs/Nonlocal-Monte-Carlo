@@ -87,9 +87,9 @@ class NPT:
             else:
                 beta_run[jj] = beta
 
-            spin_state = tuple(m.ravel())
-
             for kk in np.random.permutation(N):
+
+                spin_state = tuple(m.ravel())
                 if use_hash_table:
                     if not isinstance(hash_table, LRUCache):
                         raise ValueError("hash_table must be an instance of cachetools.LRUCache")
@@ -108,7 +108,6 @@ class NPT:
             M[:, jj] = m.ravel()
 
         return M
-
 
     def MCMC_task(self, replica_i, num_sweeps_MCMC, m_start, beta_list, use_hash_table=False, hash_table=None):
         """

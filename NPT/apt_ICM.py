@@ -33,7 +33,6 @@ class APT_ICM:
             h = h[:, np.newaxis]
         self.h = h
 
-
     def replica_energy(self, M, num_sweeps):
         """
         Calculate the energy of a given replica over a number of sweeps.
@@ -49,7 +48,6 @@ class APT_ICM:
             EE1[ii] = -1 * (m1.T @ self.J @ m1 / 2 + m1.T @ self.h)
         minEnergy = np.min(EE1)
         return minEnergy, EE1
-
 
     def MCMC(self, num_sweeps, m_start, beta, hash_table=None, use_hash_table=False):
         """
@@ -71,9 +69,10 @@ class APT_ICM:
         M = np.zeros((N, num_sweeps))
 
         for jj in range(num_sweeps):
-            spin_state = tuple(m.ravel())
 
             for kk in np.random.permutation(N):
+
+                spin_state = tuple(m.ravel())
                 if use_hash_table:
                     if not isinstance(hash_table, LRUCache):
                         raise ValueError("hash_table must be an instance of LRUCache")
@@ -179,8 +178,8 @@ class APT_ICM:
         useKatzgraber = True
         num_spins = self.J.shape[0]
         count = np.zeros(self.num_swap_attempts)
-        swap_attempted_replicas = np.zeros((self.num_swap_attempts * self.num_swapping_pairs*num_subreplicas, 2))
-        swap_accepted_replicas = np.zeros((self.num_swap_attempts * self.num_swapping_pairs*num_subreplicas, 2))
+        swap_attempted_replicas = np.zeros((self.num_swap_attempts * self.num_swapping_pairs * num_subreplicas, 2))
+        swap_accepted_replicas = np.zeros((self.num_swap_attempts * self.num_swapping_pairs * num_subreplicas, 2))
 
         # Generate all possible consecutive pairs of replicas
         all_pairs = [(i, i + 1) for i in range(1, self.num_replicas)]
@@ -204,10 +203,11 @@ class APT_ICM:
 
                     # Generate new state with MCMC
                     M_temp = self.MCMC(self.num_sweeps_MCMC_per_swap, current_m_start, beta_list[replica_i],
-                                          hash_table=hash_table, use_hash_table=self.use_hash_table)
+                                       hash_table=hash_table, use_hash_table=self.use_hash_table)
 
                     # Store the MCMC-generated states in M
-                    M[start_index:end_index, sub_replica_j * self.num_sweeps_MCMC_per_swap:(sub_replica_j + 1) * self.num_sweeps_MCMC_per_swap] = M_temp
+                    M[start_index:end_index, sub_replica_j * self.num_sweeps_MCMC_per_swap:(
+                                                                                                       sub_replica_j + 1) * self.num_sweeps_MCMC_per_swap] = M_temp
 
                     # Update the starting matrix for next iteration
                     m_start_matrix[start_index:end_index, sub_replica_j] = M_temp[:, -1]
@@ -249,7 +249,8 @@ class APT_ICM:
 
             # PT Swap for each sub-replica
             for chosen_subreplica in range(num_subreplicas):
-                mm = M[:, chosen_subreplica * self.num_sweeps_MCMC_per_swap:(chosen_subreplica + 1) * self.num_sweeps_MCMC_per_swap].T
+                mm = M[:, chosen_subreplica * self.num_sweeps_MCMC_per_swap:(
+                                                                                        chosen_subreplica + 1) * self.num_sweeps_MCMC_per_swap].T
 
                 # Attempt to swap states of each selected pair of replicas
                 for pair in selected_pairs:

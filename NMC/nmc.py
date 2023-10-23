@@ -25,7 +25,6 @@ class NMC:
         self.h = h
         self.h = np.asarray(h).reshape(-1)  # Reshape h into a 1D array
 
-
     def MCMC(self, num_sweeps, m_start, beta, J, h, anneal=False, sweeps_per_beta=1, initial_beta=0,
              hash_table=None, use_hash_table=False):
         """
@@ -48,7 +47,8 @@ class NMC:
         """
 
         N = J.shape[0]
-        m = np.asarray(m_start).copy().reshape(-1, 1)  # Make sure m_star is a numpy array and has shape (N, 1) and also create a copy
+        m = np.asarray(m_start).copy().reshape(-1,
+                                               1)  # Make sure m_star is a numpy array and has shape (N, 1) and also create a copy
         M = np.zeros((N, num_sweeps))
         J = csr_matrix(J)
         h = np.asarray(h).copy().reshape(-1, 1)  # Make sure h is a numpy array and has shape (N, 1)
@@ -68,9 +68,9 @@ class NMC:
             else:
                 beta_run[jj] = beta
 
-            spin_state = tuple(m.ravel())
-
             for kk in np.random.permutation(N):
+
+                spin_state = tuple(m.ravel())
                 if use_hash_table:
                     if not isinstance(hash_table, LRUCache):
                         raise ValueError("hash_table must be an instance of cachetools.LRUCache")
@@ -376,13 +376,13 @@ class NMC:
             # Modify J and h for clusters
             J_c = self.J.copy()
             h_c = self.h.copy()
-            J_c[all_clusters, :] = J_c[all_clusters, :] / temp_x # clusters run at higher temperature
+            J_c[all_clusters, :] = J_c[all_clusters, :] / temp_x  # clusters run at higher temperature
             h_c[all_clusters] /= temp_x
             h_c[non_clusters] = m_init[non_clusters] * 10000  # Strongly bias the non-cluster spins to keep them frozen
             # caution: hash_table is not used as J and h are being scaled by temp_x.
             M = self.MCMC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, J_c, h_c,
-                             anneal=False, hash_table=hash_table,
-                             use_hash_table=False)  # Run MCMC for clusters
+                          anneal=False, hash_table=hash_table,
+                          use_hash_table=False)  # Run MCMC for clusters
             energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in
                         range(M.shape[1])]  # Compute energies
 
@@ -397,12 +397,13 @@ class NMC:
             # Modify J and h for non-clusters
             J_nc = self.J.copy()  # non-clusters run at normal temperature
             h_nc = self.h.copy()
-            h_nc[all_clusters] = m_init[all_clusters] * 10000  # Strongly bias the cluster (backbones) spins to keep them frozen
+            h_nc[all_clusters] = m_init[
+                                     all_clusters] * 10000  # Strongly bias the cluster (backbones) spins to keep them frozen
 
             # caution: hash_table is not used as h_nc is not same as h
             M = self.MCMC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, J_nc, h_nc,
-                             anneal=False, hash_table=hash_table,
-                             use_hash_table=False)  # Run MCMC for non-clusters
+                          anneal=False, hash_table=hash_table,
+                          use_hash_table=False)  # Run MCMC for non-clusters
             energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in
                         range(M.shape[1])]  # Compute energies
 
@@ -417,7 +418,7 @@ class NMC:
             # Full update after every full_update_frequency cycles
             if cycle % full_update_frequency == 0:
                 M = self.MCMC(num_sweeps_per_NMC_phase, m_init.copy(), global_beta, self.J, self.h,
-                                 anneal=False, hash_table=hash_table, use_hash_table=use_hash_table)
+                              anneal=False, hash_table=hash_table, use_hash_table=use_hash_table)
                 energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in range(M.shape[1])]
 
                 # Store results
@@ -487,9 +488,9 @@ class NMC:
 
         # Running MCMC to find the initial m_star
         M = self.MCMC(num_sweeps_initial, m_init.copy(), global_beta, self.J, self.h, anneal=True,
-                         sweeps_per_beta=1, initial_beta=0,
-                         hash_table=hash_table,
-                         use_hash_table=use_hash_table)
+                      sweeps_per_beta=1, initial_beta=0,
+                      hash_table=hash_table,
+                      use_hash_table=use_hash_table)
 
         # Calculate initial energies from MCMC
         initial_energies = [- (M[:, i].T @ self.J @ M[:, i] / 2 + M[:, i].T @ self.h) for i in range(M.shape[1])]
@@ -643,7 +644,7 @@ class NMC:
 def main():
     # Load the coupling and external field matrices, and the list of inverse temperatures
     J = np.load('J.npy')
-    h = np.load('h.npy') # 1D array
+    h = np.load('h.npy')  # 1D array
 
     # Create an instance of NMC class
     nmc_instance = NMC(J, h)

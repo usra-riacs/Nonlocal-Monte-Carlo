@@ -50,9 +50,10 @@ class APT_preprocessor:
         M = np.zeros((N, num_sweeps))
 
         for jj in range(num_sweeps):
-            spin_state = tuple(m.ravel())
 
             for kk in np.random.permutation(N):
+
+                spin_state = tuple(m.ravel())
                 if use_hash_table:
                     if not isinstance(hash_table, LRUCache):
                         raise ValueError("hash_table must be an instance of LRUCache")
@@ -226,7 +227,7 @@ class APT_preprocessor:
         ax2.tick_params(axis='both', which='major', labelsize=18)
         for label in ax1.get_xticklabels() + ax1.get_yticklabels() + ax2.get_yticklabels():
             label.set_weight('bold')
-        #plt.show()
+        # plt.show()
         plt.savefig('beta_sigma.png')
 
 
@@ -246,7 +247,7 @@ def main():
 
     # run Adaptive Parallel Tempering preprocessing
     beta, sigma = apt_prep.run(num_sweeps_MCMC=1000, num_sweeps_read=1000, num_rng=100,
-                 beta_start=0.5, alpha=1.25, sigma_E_val=1000, beta_max=64, use_hash_table=0, num_cores=8)
+                               beta_start=0.5, alpha=1.25, sigma_E_val=1000, beta_max=64, use_hash_table=0, num_cores=8)
 
     print("\n[INFO] APT preprocessing complete.")
 
