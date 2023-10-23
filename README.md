@@ -199,7 +199,7 @@ For full demonstrations of both NMC and NPT in action, refer to the example scri
 - [APT-solver](https://github.com/usra-riacs/APT-solver) - High Performance Adaptive Parallel Tempering (APT) code
 
 ## Contributors
-- [@NavidAaddit](https://github.com/navidaadit) Navid Aaddit
+- [@NavidAadit](https://github.com/navidaadit) Navid Aadit
 - [@PAaronLott](https://github.com/PAaronLott) Aaron Lott
 - [@Mohseni](https://github.com/mohseni7) Masoud Mohseni
 
